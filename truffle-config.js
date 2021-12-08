@@ -51,6 +51,11 @@ module.exports = {
      provider: () =>
       new HDWalletProvider(mnemonic, "http://localhost:8545", 0, 10)
     },
+    iroha: {
+     host: "127.0.0.1",     // Localhost (default: none)
+     port: 8545,            // Standard Ethereum port (default: none)
+     network_id: "*"        // Any network (default: none)
+    },
     testchain0: {
       host: "127.0.0.1",     // Localhost (default: none)
       port: 8645,            // Standard Ethereum port (default: none)
