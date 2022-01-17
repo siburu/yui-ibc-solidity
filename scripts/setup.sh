@@ -55,6 +55,18 @@ function development {
     after_common
 }
 
+function iroha {
+    before_common
+
+    ${TRUFFLE} compile
+    ${TRUFFLE} migrate --reset --compile-none --network=iroha
+
+    export CONF_TPL="./pkg/consts/contract.go:./scripts/template/contract.go.tpl"
+    ${TRUFFLE} exec ./scripts/confgen.js --network=iroha
+
+    after_common
+}
+
 function testonechain {
     before_common
 
@@ -87,6 +99,9 @@ shift
 case $subcommand in
     development)
         development
+        ;;
+    iroha)
+        iroha
         ;;
     testonechain)
         testonechain

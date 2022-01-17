@@ -42,6 +42,10 @@ test:
 setup:
 	./scripts/setup.sh development
 
+.PHONY: iroha
+iroha:
+	./scripts/setup.sh iroha
+
 .PHONY: down
 down:
 	./scripts/setup.sh down
