@@ -19,7 +19,7 @@ type Client struct {
 	endpoint   string
 	clientType string
 
-	conn *rpc.Client
+	Conn *rpc.Client
 	ETHClient
 }
 
@@ -87,6 +87,7 @@ func MakeGenTxOpts(chainID *big.Int, prv *ecdsa.PrivateKey) GenTxOpts {
 				}
 				return tx.WithSignature(signer, signature)
 			},
+			Context: ctx,
 		}
 	}
 }

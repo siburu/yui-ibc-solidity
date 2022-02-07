@@ -1,6 +1,7 @@
 package irohaeth
 
 import (
+	"context"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -24,7 +25,7 @@ func NewBoundContract(address common.Address, abi abi.ABI, client *Client) *Boun
 }
 
 func (c *BoundContract) Transact(opts *bind.TransactOpts, method string, params ...interface{}) (*Transaction, error) {
-	input, err := c.abi.Pack(method, params)
+	input, err := c.abi.Pack(method, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +48,9 @@ func (c *BoundContract) Transact(opts *bind.TransactOpts, method string, params 
 	}
 
 	// send the transaction
-	if opts.Context == nil {
-		panic("no context is set")
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.TODO()
 	}
-	return c.client.SendTransaction(opts.Context, signedTx)
+	return c.client.SendTransaction(ctx, signedTx)
 }

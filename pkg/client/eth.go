@@ -18,7 +18,7 @@ func NewETHClient(endpoint string, clientType string) (*Client, error) {
 	return &Client{
 		endpoint:   endpoint,
 		clientType: clientType,
-		conn:       conn,
+		Conn:       conn,
 		ETHClient:  ethClient{Client: ethclient.NewClient(conn)},
 	}, nil
 }

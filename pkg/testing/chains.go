@@ -31,6 +31,7 @@ import (
 	ibcclient "github.com/hyperledger-labs/yui-ibc-solidity/pkg/ibc/client"
 	ibft2clienttypes "github.com/hyperledger-labs/yui-ibc-solidity/pkg/ibc/client/ibft2"
 	mockclienttypes "github.com/hyperledger-labs/yui-ibc-solidity/pkg/ibc/client/mock"
+	"github.com/hyperledger-labs/yui-ibc-solidity/pkg/irohaeth"
 	"github.com/hyperledger-labs/yui-ibc-solidity/pkg/wallet"
 )
 
@@ -45,6 +46,7 @@ const (
 )
 
 var (
+	abiHandlerContract abi.ABI
 	abiSendPacket,
 	abiGeneratedClientIdentifier,
 	abiGeneratedConnectionIdentifier,
@@ -52,7 +54,8 @@ var (
 )
 
 func init() {
-	parsedHandlerABI, err := abi.JSON(strings.NewReader(ibchandler.IbchandlerABI))
+	var err error
+	abiHandlerContract, err = abi.JSON(strings.NewReader(ibchandler.IbchandlerABI))
 	if err != nil {
 		panic(err)
 	}
@@ -60,7 +63,7 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	abiSendPacket = parsedHandlerABI.Events["SendPacket"]
+	abiSendPacket = abiHandlerContract.Events["SendPacket"]
 	abiGeneratedClientIdentifier = parsedHostABI.Events["GeneratedClientIdentifier"]
 	abiGeneratedConnectionIdentifier = parsedHostABI.Events["GeneratedConnectionIdentifier"]
 	abiGeneratedChannelIdentifier = parsedHostABI.Events["GeneratedChannelIdentifier"]
@@ -94,6 +97,10 @@ type Chain struct {
 	ClientIDs   []string          // ClientID's used on this chain
 	Connections []*TestConnection // track connectionID's created for this chain
 	IBCID       uint64
+
+	// Iroha specific items
+	irohaEthClient     *irohaeth.Client
+	ibcHandlerContract *irohaeth.BoundContract
 }
 
 type ContractConfig interface {
@@ -134,6 +141,9 @@ func NewChain(t *testing.T, chainID int64, client client.Client, config Contract
 		t.Error(err)
 	}
 
+	irohaEthClient := irohaeth.NewClient(client.Conn)
+	ibcHandlerContract := irohaeth.NewBoundContract(config.GetIBCHandlerAddress(), abiHandlerContract, irohaEthClient)
+
 	return &Chain{
 		t:              t,
 		client:         client,
@@ -149,6 +159,9 @@ func NewChain(t *testing.T, chainID int64, client client.Client, config Contract
 		SimpleToken:   *simpletoken,
 		ICS20Transfer: *ics20transfer,
 		ICS20Bank:     *ics20bank,
+
+		irohaEthClient:     irohaEthClient,
+		ibcHandlerContract: ibcHandlerContract,
 	}
 }
 
@@ -170,6 +183,20 @@ func (chain *Chain) CallOpts(ctx context.Context, index uint32) *bind.CallOpts {
 		From:    opts.From,
 		Context: opts.Context,
 	}
+}
+
+func (chain *Chain) transactAndWaitMined(opts *bind.TransactOpts, method string, params ...interface{}) error {
+	tx, err := chain.ibcHandlerContract.Transact(opts, method, params...)
+	if err != nil {
+		return fmt.Errorf("failed to transact: %v", err)
+	}
+	rc, err := chain.irohaEthClient.WaitMined(opts.Context, tx)
+	if err != nil {
+		return fmt.Errorf("failed to wait for tx to be mined: %v", err)
+	} else if rc.Status != 1 {
+		return fmt.Errorf("transaction status error: %v", rc)
+	}
+	return nil
 }
 
 func (chain *Chain) prvKey(index uint32) *ecdsa.PrivateKey {
@@ -350,9 +377,7 @@ func (chain *Chain) UpdateHeader() {
 
 func (chain *Chain) CreateMockClient(ctx context.Context, counterparty *Chain) (string, error) {
 	msg := chain.ConstructMockMsgCreateClient(counterparty)
-	if err := chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.CreateClient(chain.TxOpts(ctx, RelayerKeyIndex), msg),
-	); err != nil {
+	if err := chain.transactAndWaitMined(chain.TxOpts(ctx, RelayerKeyIndex), "createClient", msg); err != nil {
 		return "", err
 	}
 	return chain.GetLastGeneratedClientID(ctx)
@@ -360,9 +385,7 @@ func (chain *Chain) CreateMockClient(ctx context.Context, counterparty *Chain) (
 
 func (chain *Chain) UpdateMockClient(ctx context.Context, counterparty *Chain, clientID string) error {
 	msg := chain.ConstructMockMsgUpdateClient(counterparty, clientID)
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.UpdateClient(chain.TxOpts(ctx, RelayerKeyIndex), msg),
-	)
+	return chain.transactAndWaitMined(chain.TxOpts(ctx, RelayerKeyIndex), "updateClient", msg)
 }
 
 func (chain *Chain) CreateIBFT2Client(ctx context.Context, counterparty *Chain) (string, error) {
@@ -383,19 +406,18 @@ func (chain *Chain) UpdateIBFT2Client(ctx context.Context, counterparty *Chain, 
 }
 
 func (chain *Chain) ConnectionOpenInit(ctx context.Context, counterparty *Chain, connection, counterpartyConnection *TestConnection) (string, error) {
-	if err := chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ConnectionOpenInit(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgConnectionOpenInit{
-				ClientId: connection.ClientID,
-				Counterparty: ibchandler.CounterpartyData{
-					ClientId:     connection.CounterpartyClientID,
-					ConnectionId: "",
-					Prefix:       ibchandler.MerklePrefixData{KeyPrefix: counterparty.GetCommitmentPrefix()},
-				},
-				DelayPeriod: DefaultDelayPeriod,
+	if err := chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"connectionOpenInit",
+		ibchandler.IBCMsgsMsgConnectionOpenInit{
+			ClientId: connection.ClientID,
+			Counterparty: ibchandler.CounterpartyData{
+				ClientId:     connection.CounterpartyClientID,
+				ConnectionId: "",
+				Prefix:       ibchandler.MerklePrefixData{KeyPrefix: counterparty.GetCommitmentPrefix()},
 			},
-		),
+			DelayPeriod: DefaultDelayPeriod,
+		},
 	); err != nil {
 		return "", err
 	}
@@ -411,27 +433,26 @@ func (chain *Chain) ConnectionOpenTry(ctx context.Context, counterparty *Chain, 
 	if err != nil {
 		return "", err
 	}
-	if err := chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ConnectionOpenTry(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgConnectionOpenTry{
-				PreviousConnectionId: "",
-				Counterparty: ibchandler.CounterpartyData{
-					ClientId:     counterpartyConnection.ClientID,
-					ConnectionId: counterpartyConnection.ID,
-					Prefix:       ibchandler.MerklePrefixData{KeyPrefix: counterparty.GetCommitmentPrefix()},
-				},
-				DelayPeriod:      DefaultDelayPeriod,
-				ClientId:         connection.ClientID,
-				ClientStateBytes: clientStateBytes,
-				CounterpartyVersions: []ibchandler.VersionData{
-					{Identifier: "1", Features: []string{"ORDER_ORDERED", "ORDER_UNORDERED"}},
-				},
-				ProofHeight: proofConnection.Height.ToCallData(),
-				ProofInit:   proofConnection.Data,
-				ProofClient: proofClient.Data,
+	if err := chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"connectionOpenTry",
+		ibchandler.IBCMsgsMsgConnectionOpenTry{
+			PreviousConnectionId: "",
+			Counterparty: ibchandler.CounterpartyData{
+				ClientId:     counterpartyConnection.ClientID,
+				ConnectionId: counterpartyConnection.ID,
+				Prefix:       ibchandler.MerklePrefixData{KeyPrefix: counterparty.GetCommitmentPrefix()},
 			},
-		),
+			DelayPeriod:      DefaultDelayPeriod,
+			ClientId:         connection.ClientID,
+			ClientStateBytes: clientStateBytes,
+			CounterpartyVersions: []ibchandler.VersionData{
+				{Identifier: "1", Features: []string{"ORDER_ORDERED", "ORDER_UNORDERED"}},
+			},
+			ProofHeight: proofConnection.Height.ToCallData(),
+			ProofInit:   proofConnection.Data,
+			ProofClient: proofClient.Data,
+		},
 	); err != nil {
 		return "", err
 	}
@@ -452,19 +473,18 @@ func (chain *Chain) ConnectionOpenAck(
 	if err != nil {
 		return err
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ConnectionOpenAck(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgConnectionOpenAck{
-				ConnectionId:             connection.ID,
-				CounterpartyConnectionID: counterpartyConnection.ID,
-				ClientStateBytes:         clientStateBytes,
-				Version:                  ibchandler.VersionData{Identifier: "1", Features: []string{"ORDER_ORDERED", "ORDER_UNORDERED"}},
-				ProofHeight:              proofConnection.Height.ToCallData(),
-				ProofTry:                 proofConnection.Data,
-				ProofClient:              proofClient.Data,
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"connectionOpenAck",
+		ibchandler.IBCMsgsMsgConnectionOpenAck{
+			ConnectionId:             connection.ID,
+			CounterpartyConnectionID: counterpartyConnection.ID,
+			ClientStateBytes:         clientStateBytes,
+			Version:                  ibchandler.VersionData{Identifier: "1", Features: []string{"ORDER_ORDERED", "ORDER_UNORDERED"}},
+			ProofHeight:              proofConnection.Height.ToCallData(),
+			ProofTry:                 proofConnection.Data,
+			ProofClient:              proofClient.Data,
+		},
 	)
 }
 
@@ -477,15 +497,14 @@ func (chain *Chain) ConnectionOpenConfirm(
 	if err != nil {
 		return err
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ConnectionOpenConfirm(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgConnectionOpenConfirm{
-				ConnectionId: connection.ID,
-				ProofAck:     proof.Data,
-				ProofHeight:  proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"connectionOpenConfirm",
+		ibchandler.IBCMsgsMsgConnectionOpenConfirm{
+			ConnectionId: connection.ID,
+			ProofAck:     proof.Data,
+			ProofHeight:  proof.Height.ToCallData(),
+		},
 	)
 }
 
@@ -495,23 +514,22 @@ func (chain *Chain) ChannelOpenInit(
 	order channeltypes.Channel_Order,
 	connectionID string,
 ) (string, error) {
-	if err := chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelOpenInit(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelOpenInit{
-				PortId: ch.PortID,
-				Channel: ibchandler.ChannelData{
-					State:    uint8(channeltypes.INIT),
-					Ordering: uint8(order),
-					Counterparty: ibchandler.ChannelCounterpartyData{
-						PortId:    counterparty.PortID,
-						ChannelId: "",
-					},
-					ConnectionHops: []string{connectionID},
-					Version:        ch.Version,
+	if err := chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelOpenInit",
+		ibchandler.IBCMsgsMsgChannelOpenInit{
+			PortId: ch.PortID,
+			Channel: ibchandler.ChannelData{
+				State:    uint8(channeltypes.INIT),
+				Ordering: uint8(order),
+				Counterparty: ibchandler.ChannelCounterpartyData{
+					PortId:    counterparty.PortID,
+					ChannelId: "",
 				},
+				ConnectionHops: []string{connectionID},
+				Version:        ch.Version,
 			},
-		),
+		},
 	); err != nil {
 		return "", err
 	}
@@ -529,26 +547,25 @@ func (chain *Chain) ChannelOpenTry(
 	if err != nil {
 		return "", err
 	}
-	if err := chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelOpenTry(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelOpenTry{
-				PortId: ch.PortID,
-				Channel: ibchandler.ChannelData{
-					State:    uint8(channeltypes.TRYOPEN),
-					Ordering: uint8(order),
-					Counterparty: ibchandler.ChannelCounterpartyData{
-						PortId:    counterpartyCh.PortID,
-						ChannelId: counterpartyCh.ID,
-					},
-					ConnectionHops: []string{connectionID},
-					Version:        ch.Version,
+	if err := chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelOpenTry",
+		ibchandler.IBCMsgsMsgChannelOpenTry{
+			PortId: ch.PortID,
+			Channel: ibchandler.ChannelData{
+				State:    uint8(channeltypes.TRYOPEN),
+				Ordering: uint8(order),
+				Counterparty: ibchandler.ChannelCounterpartyData{
+					PortId:    counterpartyCh.PortID,
+					ChannelId: counterpartyCh.ID,
 				},
-				CounterpartyVersion: counterpartyCh.Version,
-				ProofInit:           proof.Data,
-				ProofHeight:         proof.Height.ToCallData(),
+				ConnectionHops: []string{connectionID},
+				Version:        ch.Version,
 			},
-		),
+			CounterpartyVersion: counterpartyCh.Version,
+			ProofInit:           proof.Data,
+			ProofHeight:         proof.Height.ToCallData(),
+		},
 	); err != nil {
 		return "", err
 	}
@@ -564,18 +581,17 @@ func (chain *Chain) ChannelOpenAck(
 	if err != nil {
 		return err
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelOpenAck(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelOpenAck{
-				PortId:                ch.PortID,
-				ChannelId:             ch.ID,
-				CounterpartyVersion:   counterpartyCh.Version,
-				CounterpartyChannelId: counterpartyCh.ID,
-				ProofTry:              proof.Data,
-				ProofHeight:           proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelOpenAck",
+		ibchandler.IBCMsgsMsgChannelOpenAck{
+			PortId:                ch.PortID,
+			ChannelId:             ch.ID,
+			CounterpartyVersion:   counterpartyCh.Version,
+			CounterpartyChannelId: counterpartyCh.ID,
+			ProofTry:              proof.Data,
+			ProofHeight:           proof.Height.ToCallData(),
+		},
 	)
 }
 
@@ -588,16 +604,15 @@ func (chain *Chain) ChannelOpenConfirm(
 	if err != nil {
 		return err
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelOpenConfirm(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelOpenConfirm{
-				PortId:      ch.PortID,
-				ChannelId:   ch.ID,
-				ProofAck:    proof.Data,
-				ProofHeight: proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelOpenConfirm",
+		ibchandler.IBCMsgsMsgChannelOpenConfirm{
+			PortId:      ch.PortID,
+			ChannelId:   ch.ID,
+			ProofAck:    proof.Data,
+			ProofHeight: proof.Height.ToCallData(),
+		},
 	)
 }
 
@@ -605,14 +620,13 @@ func (chain *Chain) ChannelCloseInit(
 	ctx context.Context,
 	ch TestChannel,
 ) error {
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelCloseInit(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelCloseInit{
-				PortId:    ch.PortID,
-				ChannelId: ch.ID,
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelCloseInit",
+		ibchandler.IBCMsgsMsgChannelCloseInit{
+			PortId:    ch.PortID,
+			ChannelId: ch.ID,
+		},
 	)
 }
 
@@ -625,16 +639,15 @@ func (chain *Chain) ChannelCloseConfirm(
 	if err != nil {
 		return err
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.ChannelCloseConfirm(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgChannelCloseConfirm{
-				PortId:      ch.PortID,
-				ChannelId:   ch.ID,
-				ProofInit:   proof.Data,
-				ProofHeight: proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"channelCloseConfirm",
+		ibchandler.IBCMsgsMsgChannelCloseConfirm{
+			PortId:      ch.PortID,
+			ChannelId:   ch.ID,
+			ProofInit:   proof.Data,
+			ProofHeight: proof.Height.ToCallData(),
+		},
 	)
 }
 
@@ -642,11 +655,10 @@ func (chain *Chain) SendPacket(
 	ctx context.Context,
 	packet channeltypes.Packet,
 ) error {
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.SendPacket(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			packetToCallData(packet),
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"sendPacket",
+		packetToCallData(packet),
 	)
 }
 
@@ -664,15 +676,14 @@ func (chain *Chain) HandlePacketRecv(
 	case ibcclient.MockClient:
 		proof.Data = commitPacket(packet)
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.RecvPacket(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgPacketRecv{
-				Packet:      packetToCallData(packet),
-				Proof:       proof.Data,
-				ProofHeight: proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"recvPacket",
+		ibchandler.IBCMsgsMsgPacketRecv{
+			Packet:      packetToCallData(packet),
+			Proof:       proof.Data,
+			ProofHeight: proof.Height.ToCallData(),
+		},
 	)
 }
 
@@ -691,16 +702,15 @@ func (chain *Chain) HandlePacketAcknowledgement(
 	case ibcclient.MockClient:
 		proof.Data = commitAcknowledgement(acknowledgement)
 	}
-	return chain.WaitIfNoError(ctx)(
-		chain.IBCHandler.AcknowledgePacket(
-			chain.TxOpts(ctx, RelayerKeyIndex),
-			ibchandler.IBCMsgsMsgPacketAcknowledgement{
-				Packet:          packetToCallData(packet),
-				Acknowledgement: acknowledgement,
-				Proof:           proof.Data,
-				ProofHeight:     proof.Height.ToCallData(),
-			},
-		),
+	return chain.transactAndWaitMined(
+		chain.TxOpts(ctx, RelayerKeyIndex),
+		"acknowledgePacket",
+		ibchandler.IBCMsgsMsgPacketAcknowledgement{
+			Packet:          packetToCallData(packet),
+			Acknowledgement: acknowledgement,
+			Proof:           proof.Data,
+			ProofHeight:     proof.Height.ToCallData(),
+		},
 	)
 }
 

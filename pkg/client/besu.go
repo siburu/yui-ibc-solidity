@@ -23,7 +23,7 @@ func NewBesuClient(endpoint string, clientType string) (*Client, error) {
 	return &Client{
 		endpoint:   endpoint,
 		clientType: clientType,
-		conn:       conn,
+		Conn:       conn,
 		ETHClient:  besuClient{Client: ethclient.NewClient(conn), rpcClient: conn},
 	}, nil
 }
