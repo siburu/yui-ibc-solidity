@@ -66,6 +66,13 @@ module.exports = {
       // gas: 100000000,
       provider: () =>
        new HDWalletProvider(mnemonic, "http://localhost:8745", 0, 10)
+     },
+     quorum: {
+      host: "rpcnode",
+      port: 8545,          // Standard Ethereum port (default: none)
+      network_id: "*",     // Any network (default: none)
+      provider: () =>
+       new HDWalletProvider(mnemonic, "http://rpcnode:8545", 0, 10)
      }
   },
 
