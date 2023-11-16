@@ -99,6 +99,8 @@ contract IBCConnection is IBCStore, IIBCConnectionHandshake {
         );
         // TODO we should also verify a consensus state
 
+	require(false, "error injection");
+
         updateConnectionCommitment(connectionId);
         return connectionId;
     }
