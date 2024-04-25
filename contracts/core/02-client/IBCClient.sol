@@ -9,6 +9,9 @@ import {IBCCommitment} from "../24-host/IBCCommitment.sol";
 import {IIBCClient} from "../02-client/IIBCClient.sol";
 import {IIBCClientErrors} from "../02-client/IIBCClientErrors.sol";
 
+error TestError(uint256 x, string y);
+error UnknownError(uint256 z);
+
 /**
  * @dev IBCClient is a contract that implements [ICS-2](https://github.com/cosmos/ibc/tree/main/spec/core/ics-002-client-semantics).
  */
@@ -17,6 +20,22 @@ contract IBCClient is IBCHost, IIBCClient, IIBCClientErrors {
      * @dev createClient creates a new client state and populates it with a given consensus state
      */
     function createClient(MsgCreateClient calldata msg_) external override returns (string memory clientId) {
+	if (nextClientSequence != nextConnectionSequence) {
+	    if (nextClientSequence % 5 == 1) {
+		require(false, "die by trad require");
+	    } else if (nextClientSequence % 5 == 2) {
+		revert("die by trad revert");
+	    } else if (nextClientSequence % 5 == 3) {
+		revert TestError(42, "foobar");
+	    } else if (nextClientSequence % 5 == 4) {
+		// arithmetic overflow
+		uint256 n = 1 << 255;
+		n = n + n;
+	    } else { // nextClientSequence % 5 == 0
+		revert UnknownError(999);
+	    }
+	}
+
         address clientImpl = clientRegistry[msg_.clientType];
         if (clientImpl == address(0)) {
             revert IBCClientUnregisteredClientType(msg_.clientType);
