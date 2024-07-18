@@ -1210,12 +1210,6 @@ contract TestICS04Upgrade is ICS04UpgradeTestHelper, ICS04PacketEventTestHelper 
                 proposedConnectionHops: IBCChannelLib.buildConnectionHops(proposals.p1.connectionId),
                 proofs: upgradeLocalhostProofs()
             });
-            if (flow.crossingHello) {
-                // If the upgrade already exists (i.e. crossing hello), `proposedConnectionHops` must be empty
-                vm.expectRevert();
-                ibcHandler.channelUpgradeTry(msg_);
-                msg_.proposedConnectionHops = new string[](0);
-            }
             (bool ok, uint64 seq) = ibcHandler.channelUpgradeTry(msg_);
             assertTrue(ok);
             assertEq(seq, upgradeSequence);

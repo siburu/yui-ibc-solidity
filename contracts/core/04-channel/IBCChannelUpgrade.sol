@@ -457,9 +457,6 @@ contract IBCChannelUpgradeInitTryAck is IBCChannelUpgradeBase, IIBCChannelUpgrad
             // nextSequenceSend and timeout will be filled when we move to FLUSHING
             existingUpgrade.fields = upgradeFields;
         } else {
-            if (msg_.proposedConnectionHops.length != 0) {
-                revert IBCChannelUpgradeTryProposalMustEmptyIfExist();
-            }
             upgradeFields = existingUpgrade.fields;
         }
 

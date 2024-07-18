@@ -10,9 +10,6 @@ interface IIBCChannelUpgradeErrors is IIBCChannelErrors {
 
     error IBCChannelUpgradeInvalidUpgradeFields();
 
-    /// @notice proposal must be empty if upgrade exists
-    error IBCChannelUpgradeTryProposalMustEmptyIfExist();
-
     /// @param upgrader address of the upgrader
     error IBCChannelUpgradeUnauthorizedChannelUpgrader(address upgrader);
 
